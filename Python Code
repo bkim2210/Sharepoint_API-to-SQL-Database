@@ -1,0 +1,122 @@
+# Import necessary libraries
+import pandas as pd
+from datetime import datetime
+import sys
+import pyodbc
+import sqlalchemy as sa
+from office365.runtime.auth.client_credential import ClientCredential
+from office365.runtime.auth.authentication_context import AuthenticationContext
+from office365.sharepoint.client_context import ClientContext
+from office365.sharepoint.files.file import File
+
+# Parse command line arguments or use default values
+# This section handles command-line arguments for database connection details.
+# If arguments are not provided, default values are used.
+try:
+    script, database, server, auditKey, username, password, loadtype, table = sys.argv
+except Exception:
+    # Use default values if command-line arguments are not provided
+    database = "Enter Your Database Name"
+    server = "Enter Your Server Name"
+    auditKey = "Enter Your Audit Key"
+    username = "Enter applicationID from Azure APP"
+    password = "Enter password from Azure APP"
+    loadtype = "Bulk"
+
+# Connect to Datawarehouse
+# This section connects to the data warehouse using SQL Alchemy and pyodbc.
+# It sets up the engine for database interaction.
+driver_name = ''
+# Determine available drivers for pyodbc
+driver_names = [x for x in pyodbc.drivers() if x.endswith(' for SQL Server')]
+if driver_names:
+    driver_name = driver_names[0]
+else:
+    print('(No suitable driver found. Cannot connect.)')
+
+# Enable connection using sqlalchemy
+connection_string = "DRIVER={" + driver_name + "};SERVER=" + server + ";DATABASE=" + database + ";trusted_connection=yes"
+connection_url = sa.engine.URL.create("mssql+pyodbc", query={"odbc_connect": connection_string})
+engine = sa.create_engine(connection_url)
+
+# Replace with your actual application ID, username, and password for SharePoint
+applicationID = "Enter applicationID from Azure APP"
+site = "Enter Site URL of the Sharepoint Site"
+
+# Authentication to SharePoint
+client_credentials = ClientCredential(applicationID, password)
+context_auth = AuthenticationContext(site)
+context_auth.acquire_token_for_app(client_id=applicationID, client_secret=password)
+ctx = ClientContext(site, context_auth)
+web = ctx.web
+ctx.load(web)
+ctx.execute_query()
+
+# Function to get members of a SharePoint group by ID
+# Helper function to retrieve members of a SharePoint group
+def get_group_members(group_id):
+    # Code to fetch group members using SharePoint API
+    # ...
+
+# Establish the root folder in SharePoint
+rootFolder = ctx.web.get_folder_by_server_relative_url("Enter the File path you want to retrieve")
+
+# Load the child folders into an iterable collection
+folders = rootFolder.folders
+ctx.load(folders)
+ctx.execute_query()
+
+# Prepare data for DataFrame
+data = []
+
+# Folder ID to skip (add if a folder needs to be skipped, need to add the folder id)
+folder_to_skip = 'Only add if a folder needs to be skipped, need to add the folder id'
+
+# Iterate through each folder's role assignments
+# This section iterates through SharePoint folders, retrieves role assignments, and builds a DataFrame
+for folder in folders:
+    if folder.properties['UniqueId'] == folder_to_skip:
+        continue
+
+    role_assignments = folder.list_item_all_fields.role_assignments
+    ctx.load(role_assignments)
+    ctx.execute_query()
+
+    folder_item_count = folder.properties['ItemCount']
+    folder_path = folder.properties['ServerRelativeUrl']
+    folder_link = f"{site}/Shared%20Documents/{folder.properties['Name']}"
+
+    for role_assignment in role_assignments:
+        member = role_assignment.member
+        ctx.load(member)
+        ctx.execute_query()
+
+        if member.properties["PrincipalType"] == 8:
+            group_id = member.properties["Id"]
+            members = get_group_members(group_id)
+
+            data.append({
+                'Folder ID': folder.properties["UniqueId"],
+                'Folder Name': folder.properties["Name"],
+                'Folder Path': folder_path,
+                'Folder Link': folder_link,
+                'Item Count': folder_item_count,
+                'Group Name': member.properties["LoginName"],
+                'Members': members
+            })
+
+# Create DataFrame
+df = pd.DataFrame(data)
+
+# Filter DataFrame for entries with group members
+df_with_members = df[df['Members'].notnull()]
+# Filter DataFrame for entries without group members
+df_empty_members = df[df['Members'].apply(len) == 0]
+df_with_members = df_with_members.explode('Members')
+df_with_members['Members'] = df_with_members['Members'].apply(lambda x: None if not x else x)
+df_combined = pd.concat([df_with_members, df_empty_members], ignore_index=True)
+current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+df_combined['Pull Date'] = current_datetime
+
+# Try to write DataFrame to SQL
+# This section attempts to write the DataFrame to
