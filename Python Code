@@ -120,3 +120,15 @@ df_combined['Pull Date'] = current_datetime
 
 # Try to write DataFrame to SQL
 # This section attempts to write the DataFrame to
+# Try to write DataFrame to SQL
+try:
+    df_combined.to_sql(
+        name="Enter Table name",
+        schema="Enter the schema for the table",
+        con=engine,
+        index=False,
+        if_exists="append"
+    )
+except Exception as e:
+    errorLog(engine, e)
+    raise e
